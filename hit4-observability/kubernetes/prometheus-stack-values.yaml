@@ -1,0 +1,183 @@
+# =============================================================================
+# Hit 4 — Helm values para prometheus-community/kube-prometheus-stack
+#
+# Instalación:
+#   helm repo add prometheus-community https://prometheus-community.github.io/helm-charts
+#   helm repo update
+#   helm upgrade --install kube-prom-stack prometheus-community/kube-prometheus-stack \
+#     --namespace monitoring \
+#     --create-namespace \
+#     --values prometheus-stack-values.yaml
+# =============================================================================
+
+# --- Prometheus ---
+prometheus:
+  prometheusSpec:
+    # Nodo de infraestructura
+    nodeSelector:
+      pool: infra
+    tolerations:
+      - key: "dedicated"
+        operator: "Equal"
+        value: "infra"
+        effect: "NoSchedule"
+
+    # Retención de métricas
+    retention: 15d
+    retentionSize: "8GB"
+
+    resources:
+      requests:
+        cpu: 250m
+        memory: 512Mi
+      limits:
+        cpu: 1000m
+        memory: 2Gi
+
+    storageSpec:
+      volumeClaimTemplate:
+        spec:
+          accessModes: ["ReadWriteOnce"]
+          resources:
+            requests:
+              storage: 20Gi
+
+    # Scrape adicional para los servicios de la app
+    additionalScrapeConfigs:
+      - job_name: "sobel-apps"
+        kubernetes_sd_configs:
+          - role: pod
+            namespaces:
+              names: ["apps"]
+        relabel_configs:
+          # Solo pods con la anotación prometheus.io/scrape: "true"
+          - source_labels: [__meta_kubernetes_pod_annotation_prometheus_io_scrape]
+            action: keep
+            regex: "true"
+          - source_labels: [__meta_kubernetes_pod_annotation_prometheus_io_path]
+            action: replace
+            target_label: __metrics_path__
+            regex: (.+)
+          - source_labels: [__address__, __meta_kubernetes_pod_annotation_prometheus_io_port]
+            action: replace
+            regex: ([^:]+)(?::\d+)?;(\d+)
+            replacement: $1:$2
+            target_label: __address__
+          - action: labelmap
+            regex: __meta_kubernetes_pod_label_(.+)
+          - source_labels: [__meta_kubernetes_namespace]
+            target_label: namespace
+          - source_labels: [__meta_kubernetes_pod_name]
+            target_label: pod
+
+      - job_name: "sobel-workers-external"
+        # GCE Service Discovery — descubre automáticamente las VMs del MIG.
+        # Prometheus consulta la API de GCE y actualiza los targets al escalar/desescalar.
+        # Prerrequisito: el SA del nodo (o Workload Identity) debe tener compute.instances.list
+        gce_sd_configs:
+          - project: GCP_PROJECT_ID       # ← reemplazar con el ID real del proyecto GCP
+            zone: us-central1-.*          # regex que cubre todas las zonas de la región
+            filter: 'name="sobel-worker*"' # filtra solo las VMs del MIG
+            port: 9090                     # puerto donde el worker expone /metrics
+        relabel_configs:
+          # Filtrar por nombre (refuerza el filter de GCE SD)
+          - source_labels: [__meta_gce_instance_name]
+            action: keep
+            regex: "sobel-worker.*"
+          # Etiquetas útiles para las series en Grafana
+          - source_labels: [__meta_gce_instance_name]
+            target_label: instance
+          - source_labels: [__meta_gce_zone]
+            target_label: zone
+          - target_label: pool
+            replacement: "external"
+
+      - job_name: "rabbitmq"
+        static_configs:
+          - targets: ["rabbitmq.infra.svc.cluster.local:15692"]
+        metrics_path: /metrics
+
+# --- Grafana ---
+grafana:
+  nodeSelector:
+    pool: infra
+  tolerations:
+    - key: "dedicated"
+      operator: "Equal"
+      value: "infra"
+      effect: "NoSchedule"
+
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+
+  # Exponer con LoadBalancer para acceso externo (o usar port-forward en dev)
+  service:
+    type: LoadBalancer
+    port: 3000
+
+  # Provisioning automático del dashboard custom
+  dashboardProviders:
+    dashboardproviders.yaml:
+      apiVersion: 1
+      providers:
+        - name: "sobel"
+          orgId: 1
+          folder: "Sobel"
+          type: file
+          disableDeletion: false
+          updateIntervalSeconds: 30
+          options:
+            path: /var/lib/grafana/dashboards/sobel
+
+  dashboards:
+    sobel:
+      sobel-main:
+        # El dashboard se crea como ConfigMap (ver sobel-dashboard-configmap.yaml)
+        configMapRef:
+          name: sobel-grafana-dashboard
+          key: sobel-main.json
+
+  adminPassword: "changeme123"  # Cambiar en producción via secret
+
+  grafana.ini:
+    server:
+      root_url: "%(protocol)s://%(domain)s:%(http_port)s/"
+    auth.anonymous:
+      enabled: false
+    dashboards:
+      default_home_dashboard_path: /var/lib/grafana/dashboards/sobel/sobel-main.json
+
+# --- AlertManager ---
+alertmanager:
+  alertmanagerSpec:
+    nodeSelector:
+      pool: infra
+    tolerations:
+      - key: "dedicated"
+        operator: "Equal"
+        value: "infra"
+        effect: "NoSchedule"
+    resources:
+      requests:
+        cpu: 50m
+        memory: 64Mi
+
+# --- node-exporter y kube-state-metrics ---
+nodeExporter:
+  enabled: true
+
+kubeStateMetrics:
+  enabled: true
+
+# --- Deshabilitar componentes no necesarios en este setup ---
+kubeControllerManager:
+  enabled: false  # GKE no expone estos endpoints
+kubeScheduler:
+  enabled: false
+kubeEtcd:
+  enabled: false

@@ -1,0 +1,284 @@
+---
+# ConfigMap que contiene el dashboard de Grafana para el sistema Sobel.
+# Grafana lo carga automáticamente gracias al dashboardProvider configurado
+# en prometheus-stack-values.yaml.
+#
+# Para actualizar el dashboard sin re-deployar:
+#   kubectl create configmap sobel-grafana-dashboard \
+#     --from-file=sobel-main.json=grafana-dashboards/sobel-main.json \
+#     -n monitoring --dry-run=client -o yaml | kubectl apply -f -
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: sobel-grafana-dashboard
+  namespace: monitoring
+  labels:
+    grafana_dashboard: "1"
+data:
+  sobel-main.json: |
+    {
+      "__inputs": [],
+      "__requires": [
+        { "type": "grafana", "id": "grafana", "name": "Grafana", "version": "10.0.0" },
+        { "type": "datasource", "id": "prometheus", "name": "Prometheus", "version": "1.0.0" }
+      ],
+      "annotations": { "list": [] },
+      "editable": true,
+      "fiscalYearStartMonth": 0,
+      "graphTooltip": 1,
+      "id": null,
+      "links": [],
+      "panels": [
+
+        {
+          "collapsed": false,
+          "gridPos": { "h": 1, "w": 24, "x": 0, "y": 0 },
+          "id": 100,
+          "title": "📦 Recursos del Cluster",
+          "type": "row"
+        },
+
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "fieldConfig": {
+            "defaults": {
+              "color": { "mode": "palette-classic" },
+              "custom": { "lineWidth": 2 },
+              "unit": "percentunit"
+            }
+          },
+          "gridPos": { "h": 8, "w": 12, "x": 0, "y": 1 },
+          "id": 1,
+          "options": { "tooltip": { "mode": "multi" } },
+          "targets": [
+            {
+              "expr": "sum(rate(container_cpu_usage_seconds_total{namespace=~\"apps|infra\", container!=\"\", container!=\"POD\"}[5m])) by (pod)",
+              "legendFormat": "{{pod}}",
+              "refId": "A"
+            }
+          ],
+          "title": "CPU por Pod (apps + infra)",
+          "type": "timeseries"
+        },
+
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "fieldConfig": {
+            "defaults": {
+              "color": { "mode": "palette-classic" },
+              "custom": { "lineWidth": 2 },
+              "unit": "bytes"
+            }
+          },
+          "gridPos": { "h": 8, "w": 12, "x": 12, "y": 1 },
+          "id": 2,
+          "targets": [
+            {
+              "expr": "sum(container_memory_working_set_bytes{namespace=~\"apps|infra\", container!=\"\", container!=\"POD\"}) by (pod)",
+              "legendFormat": "{{pod}}",
+              "refId": "A"
+            }
+          ],
+          "title": "Memoria (Working Set) por Pod",
+          "type": "timeseries"
+        },
+
+        {
+          "collapsed": false,
+          "gridPos": { "h": 1, "w": 24, "x": 0, "y": 9 },
+          "id": 101,
+          "title": "🐇 RabbitMQ — Mensajes",
+          "type": "row"
+        },
+
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "fieldConfig": {
+            "defaults": {
+              "color": { "mode": "palette-classic" },
+              "custom": { "lineWidth": 2 },
+              "unit": "short"
+            }
+          },
+          "gridPos": { "h": 8, "w": 12, "x": 0, "y": 10 },
+          "id": 3,
+          "targets": [
+            {
+              "expr": "rabbitmq_queue_messages{queue=\"fragments.pending\"}",
+              "legendFormat": "pending (en cola)",
+              "refId": "A"
+            },
+            {
+              "expr": "rate(rabbitmq_queue_messages_published_total{queue=\"fragments.pending\"}[1m])",
+              "legendFormat": "publicados/s",
+              "refId": "B"
+            },
+            {
+              "expr": "rate(rabbitmq_queue_messages_delivered_total{queue=\"fragments.pending\"}[1m])",
+              "legendFormat": "consumidos/s",
+              "refId": "C"
+            }
+          ],
+          "title": "Cola fragments.pending",
+          "type": "timeseries"
+        },
+
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "fieldConfig": {
+            "defaults": {
+              "color": { "fixedColor": "red", "mode": "fixed" },
+              "custom": { "lineWidth": 2 },
+              "unit": "short"
+            }
+          },
+          "gridPos": { "h": 8, "w": 12, "x": 12, "y": 10 },
+          "id": 4,
+          "targets": [
+            {
+              "expr": "rabbitmq_queue_messages{queue=\"fragments.dead\"}",
+              "legendFormat": "DLQ (mensajes muertos)",
+              "refId": "A"
+            }
+          ],
+          "title": "Dead Letter Queue (fragments.dead)",
+          "type": "timeseries"
+        },
+
+        {
+          "collapsed": false,
+          "gridPos": { "h": 1, "w": 24, "x": 0, "y": 18 },
+          "id": 102,
+          "title": "⏱️ Latencia de Procesamiento Sobel",
+          "type": "row"
+        },
+
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "fieldConfig": {
+            "defaults": {
+              "color": { "mode": "palette-classic" },
+              "custom": { "lineWidth": 2 },
+              "unit": "s"
+            }
+          },
+          "gridPos": { "h": 8, "w": 16, "x": 0, "y": 19 },
+          "id": 5,
+          "targets": [
+            {
+              "expr": "histogram_quantile(0.50, rate(sobel_fragment_processing_duration_seconds_bucket[5m]))",
+              "legendFormat": "p50",
+              "refId": "A"
+            },
+            {
+              "expr": "histogram_quantile(0.95, rate(sobel_fragment_processing_duration_seconds_bucket[5m]))",
+              "legendFormat": "p95",
+              "refId": "B"
+            },
+            {
+              "expr": "histogram_quantile(0.99, rate(sobel_fragment_processing_duration_seconds_bucket[5m]))",
+              "legendFormat": "p99",
+              "refId": "C"
+            }
+          ],
+          "title": "Latencia de procesamiento por fragmento (p50/p95/p99)",
+          "type": "timeseries"
+        },
+
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "short",
+              "color": { "mode": "thresholds" },
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  { "color": "green", "value": null },
+                  { "color": "yellow", "value": 0.01 },
+                  { "color": "red", "value": 0.05 }
+                ]
+              }
+            }
+          },
+          "gridPos": { "h": 8, "w": 8, "x": 16, "y": 19 },
+          "id": 6,
+          "targets": [
+            {
+              "expr": "rate(sobel_fragments_errors_total[5m]) / (rate(sobel_fragments_processed_total[5m]) + rate(sobel_fragments_errors_total[5m]))",
+              "legendFormat": "Tasa de error",
+              "refId": "A"
+            }
+          ],
+          "title": "Tasa de errores de workers",
+          "type": "gauge",
+          "options": {
+            "reduceOptions": { "calcs": ["lastNotNull"] },
+            "showThresholdLabels": false
+          }
+        },
+
+        {
+          "collapsed": false,
+          "gridPos": { "h": 1, "w": 24, "x": 0, "y": 27 },
+          "id": 103,
+          "title": "🚀 Throughput",
+          "type": "row"
+        },
+
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "fieldConfig": {
+            "defaults": {
+              "color": { "mode": "palette-classic" },
+              "custom": { "lineWidth": 2 },
+              "unit": "reqps"
+            }
+          },
+          "gridPos": { "h": 8, "w": 12, "x": 0, "y": 28 },
+          "id": 7,
+          "targets": [
+            {
+              "expr": "rate(sobel_fragments_processed_total[1m])",
+              "legendFormat": "fragmentos procesados/s — {{worker_id}}",
+              "refId": "A"
+            }
+          ],
+          "title": "Fragmentos procesados por segundo (por worker)",
+          "type": "timeseries"
+        },
+
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "fieldConfig": {
+            "defaults": {
+              "color": { "mode": "palette-classic" },
+              "custom": { "lineWidth": 2 },
+              "unit": "reqps"
+            }
+          },
+          "gridPos": { "h": 8, "w": 12, "x": 12, "y": 28 },
+          "id": 8,
+          "targets": [
+            {
+              "expr": "rate(http_requests_total{namespace=\"apps\", app=\"backend\"}[1m])",
+              "legendFormat": "backend req/s — {{method}} {{status}}",
+              "refId": "A"
+            }
+          ],
+          "title": "Requests al Backend por segundo",
+          "type": "timeseries"
+        }
+
+      ],
+      "refresh": "30s",
+      "schemaVersion": 38,
+      "tags": ["sobel", "kubernetes", "hit4"],
+      "templating": { "list": [] },
+      "time": { "from": "now-1h", "to": "now" },
+      "timepicker": {},
+      "timezone": "browser",
+      "title": "Sobel — Sistema Distribuido",
+      "uid": "sobel-main-v1",
+      "version": 1
+    }

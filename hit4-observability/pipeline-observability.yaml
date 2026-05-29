@@ -1,0 +1,119 @@
+name: "Pipeline — Hit 4: Observabilidad (Prometheus + Grafana)"
+
+on:
+  workflow_dispatch:
+    inputs:
+      action:
+        description: "Acción a realizar"
+        required: true
+        type: choice
+        options:
+          - install       # Primera instalación
+          - upgrade       # Actualizar valores / dashboard
+          - uninstall     # Desinstalar (cuidado: borra datos)
+      environment:
+        description: "Entorno"
+        required: true
+        default: "production"
+        type: choice
+        options: [production, staging]
+
+env:
+  PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
+  GKE_CLUSTER: ${{ secrets.GKE_CLUSTER_NAME }}
+  GKE_REGION: ${{ secrets.GKE_REGION }}
+  HELM_RELEASE: "kube-prom-stack"
+  HELM_NAMESPACE: "monitoring"
+
+jobs:
+  deploy-observability:
+    name: "Deploy Prometheus + Grafana"
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Authenticate to GCP
+        uses: google-github-actions/auth@v2
+        with:
+          credentials_json: ${{ secrets.GCP_SA_KEY }}
+
+      - name: Setup gcloud + kubectl
+        uses: google-github-actions/setup-gcloud@v2
+        with:
+          project_id: ${{ env.PROJECT_ID }}
+
+      - name: Get GKE credentials
+        run: |
+          gcloud container clusters get-credentials "$GKE_CLUSTER" \
+            --region "$GKE_REGION" \
+            --project "$PROJECT_ID"
+
+      - name: Install Helm
+        uses: azure/setup-helm@v4
+        with:
+          version: "v3.14.0"
+
+      - name: Add Prometheus Helm repo
+        run: |
+          helm repo add prometheus-community \
+            https://prometheus-community.github.io/helm-charts
+          helm repo update
+
+      - name: Create monitoring namespace (idempotente)
+        run: |
+          kubectl apply -f hit4-observability/kubernetes/namespace-monitoring.yaml
+
+      - name: Install / Upgrade kube-prometheus-stack
+        if: ${{ inputs.action == 'install' || inputs.action == 'upgrade' }}
+        run: |
+          helm upgrade --install "$HELM_RELEASE" \
+            prometheus-community/kube-prometheus-stack \
+            --namespace "$HELM_NAMESPACE" \
+            --create-namespace \
+            --values hit4-observability/kubernetes/prometheus-stack-values.yaml \
+            --set grafana.adminPassword="${{ secrets.GRAFANA_ADMIN_PASSWORD }}" \
+            --atomic \
+            --timeout 10m \
+            --wait
+
+      - name: Apply Grafana Dashboard ConfigMap
+        if: ${{ inputs.action == 'install' || inputs.action == 'upgrade' }}
+        run: |
+          kubectl apply -f hit4-observability/kubernetes/sobel-dashboard-configmap.yaml
+
+      - name: Apply Prometheus Alerts
+        if: ${{ inputs.action == 'install' || inputs.action == 'upgrade' }}
+        run: |
+          kubectl apply -f hit4-observability/kubernetes/sobel-alerts.yaml
+
+      - name: Verify deployment
+        if: ${{ inputs.action == 'install' || inputs.action == 'upgrade' }}
+        run: |
+          echo "=== Pods en monitoring ==="
+          kubectl get pods -n monitoring
+
+          echo ""
+          echo "=== Servicios en monitoring ==="
+          kubectl get svc -n monitoring
+
+          echo ""
+          echo "=== PrometheusRules ==="
+          kubectl get prometheusrule -n monitoring
+
+          echo ""
+          GRAFANA_IP=$(kubectl get svc "$HELM_RELEASE-grafana" \
+            -n monitoring \
+            -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null || echo "pending")
+          echo "Grafana URL: http://${GRAFANA_IP}:3000"
+          echo "  Usuario: admin"
+          echo "  Password: (ver secret GRAFANA_ADMIN_PASSWORD)"
+
+      - name: Uninstall
+        if: ${{ inputs.action == 'uninstall' }}
+        run: |
+          helm uninstall "$HELM_RELEASE" --namespace "$HELM_NAMESPACE" || true
+          kubectl delete -f hit4-observability/kubernetes/sobel-dashboard-configmap.yaml || true
+          kubectl delete -f hit4-observability/kubernetes/sobel-alerts.yaml || true
+          echo "⚠️  Namespace monitoring NO eliminado. Eliminarlo manualmente si es necesario."

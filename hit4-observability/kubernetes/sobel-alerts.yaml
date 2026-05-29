@@ -1,0 +1,173 @@
+---
+# Hit 4 — Alertas de Prometheus para el sistema Sobel
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: sobel-alerts
+  namespace: monitoring
+  labels:
+    app: kube-prometheus-stack
+    release: kube-prom-stack
+spec:
+  groups:
+
+    # -------------------------------------------------------------------------
+    # Grupo 1: Cola de RabbitMQ
+    # -------------------------------------------------------------------------
+    - name: rabbitmq.queue
+      interval: 30s
+      rules:
+
+        - alert: FragmentQueueHighDepth
+          expr: |
+            rabbitmq_queue_messages{queue="fragments.pending"} > 500
+          for: 2m
+          labels:
+            severity: warning
+            component: messaging
+          annotations:
+            summary: "Cola fragments.pending con alta profundidad"
+            description: >
+              La cola fragments.pending tiene {{ $value }} mensajes pendientes
+              hace más de 2 minutos. Puede indicar insuficiencia de workers.
+              Considerar escalar el MIG de workers.
+
+        - alert: FragmentQueueCritical
+          expr: |
+            rabbitmq_queue_messages{queue="fragments.pending"} > 2000
+          for: 1m
+          labels:
+            severity: critical
+            component: messaging
+          annotations:
+            summary: "Cola fragments.pending CRÍTICA"
+            description: >
+              Cola con {{ $value }} mensajes. Workers muy por debajo de la demanda.
+
+        - alert: DLQHasMessages
+          expr: |
+            rabbitmq_queue_messages{queue="fragments.dead"} > 0
+          for: 1m
+          labels:
+            severity: warning
+            component: messaging
+          annotations:
+            summary: "La Dead Letter Queue tiene mensajes"
+            description: >
+              fragments.dead acumuló {{ $value }} mensajes. Verificar logs
+              de workers por errores de procesamiento.
+
+        - alert: RabbitMQDown
+          expr: |
+            up{job="rabbitmq"} == 0
+          for: 1m
+          labels:
+            severity: critical
+            component: messaging
+          annotations:
+            summary: "RabbitMQ no responde"
+            description: "El endpoint de métricas de RabbitMQ está caído."
+
+    # -------------------------------------------------------------------------
+    # Grupo 2: Workers
+    # -------------------------------------------------------------------------
+    - name: sobel.workers
+      interval: 30s
+      rules:
+
+        - alert: WorkerNotProcessing
+          expr: |
+            rate(sobel_fragments_processed_total[5m]) == 0
+            and
+            rabbitmq_queue_messages{queue="fragments.pending"} > 10
+          for: 3m
+          labels:
+            severity: critical
+            component: worker
+          annotations:
+            summary: "Workers no están procesando fragmentos"
+            description: >
+              Hay {{ $value }} fragmentos en cola pero ningún worker ha procesado
+              nada en los últimos 5 minutos.
+
+        - alert: WorkerHighProcessingTime
+          expr: |
+            histogram_quantile(0.95,
+              rate(sobel_fragment_processing_duration_seconds_bucket[5m])
+            ) > 30
+          for: 5m
+          labels:
+            severity: warning
+            component: worker
+          annotations:
+            summary: "Latencia de procesamiento Sobel alta (p95 > 30s)"
+            description: >
+              El percentil 95 de latencia de procesamiento de fragmentos
+              es {{ $value }}s, superando el umbral de 30 segundos.
+
+        - alert: WorkerHighErrorRate
+          expr: |
+            rate(sobel_fragments_errors_total[5m])
+            /
+            (rate(sobel_fragments_processed_total[5m]) + rate(sobel_fragments_errors_total[5m]))
+            > 0.05
+          for: 2m
+          labels:
+            severity: warning
+            component: worker
+          annotations:
+            summary: "Tasa de errores de workers > 5%"
+            description: >
+              La tasa de errores de procesamiento Sobel es {{ $value | humanizePercentage }}.
+
+    # -------------------------------------------------------------------------
+    # Grupo 3: Aplicación (backend/split/joiner)
+    # -------------------------------------------------------------------------
+    - name: sobel.app
+      interval: 30s
+      rules:
+
+        - alert: BackendHighErrorRate
+          expr: |
+            rate(http_requests_total{namespace="apps", app="backend", status=~"5.."}[5m])
+            /
+            rate(http_requests_total{namespace="apps", app="backend"}[5m])
+            > 0.01
+          for: 2m
+          labels:
+            severity: warning
+            component: backend
+          annotations:
+            summary: "Backend con tasa de errores HTTP 5xx > 1%"
+            description: >
+              El backend está retornando errores 5xx en el {{ $value | humanizePercentage }}
+              de las peticiones.
+
+        - alert: PodCrashLooping
+          expr: |
+            rate(kube_pod_container_status_restarts_total{namespace=~"apps|infra"}[15m]) > 0
+          for: 5m
+          labels:
+            severity: critical
+            component: kubernetes
+          annotations:
+            summary: "Pod en CrashLoop: {{ $labels.pod }}"
+            description: >
+              El pod {{ $labels.pod }} en namespace {{ $labels.namespace }}
+              está reiniciando continuamente.
+
+        - alert: HighMemoryUsage
+          expr: |
+            container_memory_working_set_bytes{namespace=~"apps|infra", container!=""}
+            /
+            container_spec_memory_limit_bytes{namespace=~"apps|infra", container!=""}
+            > 0.85
+          for: 5m
+          labels:
+            severity: warning
+            component: kubernetes
+          annotations:
+            summary: "Alto uso de memoria: {{ $labels.pod }}/{{ $labels.container }}"
+            description: >
+              El contenedor {{ $labels.container }} del pod {{ $labels.pod }}
+              usa {{ $value | humanizePercentage }} de su límite de memoria.
